@@ -1,0 +1,36 @@
+name: WhatsApp Bot
+
+on:
+  schedule:
+    # Runs every 5 minutes (adjust as needed, mindful of GitHub Actions limits)
+    # The cron syntax is: minute hour day_of_month month day_of_week
+    # For example, to run every hour at minute 0: '0 * * * *'
+    # For a truly continuous bot, a dedicated server or PaaS is recommended.
+    - cron: '*/5 * * * *'
+  workflow_dispatch: # Allows manual triggering from the GitHub Actions tab
+
+env:
+  FIREBASE_SERVICE_ACCOUNT_KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_KEY }}
+  FIREBASE_DATABASE_URL: ${{ secrets.FIREBASE_DATABASE_URL }}
+  FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+  GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350 # Max run time for the job (just under 6 hours for free tier)
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18' # Or '20' if preferred
+
+    - name: Install dependencies
+      run: npm install
+
+    - name: Run WhatsApp Bot
+      run: npm start
