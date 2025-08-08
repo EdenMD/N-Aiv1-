@@ -1,8 +1,10 @@
-const { default: makeWASocket, DisconnectReason, jidNormalizedUser, fetchLatestBaileysVersion, delay } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, DisconnectReason, jidNormalizedUser, fetchLatestBaileysVersion, delay, useMultiFileAuthState } = require('@whiskeysockets/baileys');
 const { Boom } = require('@hapi/boom');
 const initializeFirebase = require('./firebaseConfig');
 const userData = require('./userData.json');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const fs = require('fs');
+const path = require('path');
 
 // --- Firebase Initialization ---
 const admin = initializeFirebase();
@@ -19,7 +21,7 @@ const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
 
 // --- Default AI Prompt for Nyasha Munyanyiwa (Zila fallback replacement) ---
 const DEFAULT_NYASHA_PROMPT = `
-You are Nyasha Munyanyiwa, a 16-year-old boy living in Zimbabwe with his mother, father, and sister.
+YouYou are Nyasha Munyanyiwa, a 16-year-old boy living in Zimbabwe with his mother, father, and sister.
 You are generally curious, respectful, and observant. You speak in a friendly, slightly informal tone, characteristic of a Zimbabwean teenager.
 You might use common Zimbabwean phrases or expressions subtly (e.g., "howzit," "sharp," "eish," "saka").
 You enjoy talking about daily life, school, friends, local events, and maybe a bit about sports or music popular in Zimbabwe.
@@ -38,8 +40,7 @@ async function loadCredsFromFirebase() {
       process.exit(1);
     }
     console.log('WhatsApp authentication data loaded from Firebase.');
-    // Baileys useMultiFileAuthState expects a 'state' object with a 'creds' property
-    return { creds };
+    return creds; // Return only the creds object
   } catch (error) {
     console.error('Error loading authentication data from Firebase:', error);
     process.exit(1);
@@ -72,7 +73,7 @@ async function storeMessageInFirestore(fromJid, messageId, messageContent, parti
     // console.log(`Message stored for ${fromJid}: ${messageContent}`);
   } catch (error) {
     console.error('Error storing message in Firestore:', error);
-  }
+  }f
 }
 
 // Function to get conversation history from Firestore
@@ -120,24 +121,20 @@ async function connectToWhatsApp() {
   const { version } = await fetchLatestBaileysVersion();
   console.log(`using Baileys v${version.join('.')}`);
 
-  // Load credentials from Firebase RTDB
-  const initialAuthState = await loadCredsFromFirebase();
+  // --- NEW: Temporary local file setup for Baileys --- 
+  const AUTH_FILE_DIR = 'temp_baileys_session';
+  if (fs.existsSync(AUTH_FILE_DIR)) {
+    fs.rmSync(AUTH_FILE_DIR, { recursive: true, force: true });
+  }
+  fs.mkdirSync(AUTH_FILE_DIR);
 
-  // Use a custom state management for Baileys, loading from Firebase
-  const state = {
-    creds: initialAuthState.creds,
-    keys: {
-      get: (type, ids) => {
-        // Implement custom key retrieval from Firebase if needed
-        // For now, let Baileys handle basic key management within 'creds'
-        return {}; // Or retrieve from a 'keys' sub-document in Firebase if more complex keys are stored
-      },
-      set: (data) => {
-        // Implement custom key saving to Firebase if needed
-        // For now, let Baileys manage within 'creds' and we'll save the whole 'creds' object
-      }
-    }
-  };
+  // Load credentials from Firebase RTDB
+  const credsFromFirebase = await loadCredsFromFirebase();
+
+  // Write the loaded credentials to the local creds.json file that useMultiFileAuthState expects
+  fs.writeFileSync(path.join(AUTH_FILE_DIR, 'creds.json'), JSON.stringify(credsFromFirebase));
+
+  const { state, saveCreds } = await useMultiFileAuthState(AUTH_FILE_DIR);
 
   const sock = makeWASocket({
     version,
@@ -153,6 +150,9 @@ async function connectToWhatsApp() {
 
     if (connection === 'close') {
       let reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
+      // Clean up temporary files on disconnect to ensure a fresh start on next run
+      fs.rmSync(AUTH_FILE_DIR, { recursive: true, force: true });
+
       if (reason === DisconnectReason.badSession || reason === DisconnectReason.loggedOut) {
         console.error(`!!! Bad Session or Logged Out. Please re-run Replit authentication to get a fresh QR and update Firebase. !!!`);
         process.exit(1); // Exit with error, GitHub Action will restart on schedule
@@ -170,8 +170,11 @@ async function connectToWhatsApp() {
 
   // Event listener for credentials update (IMPORTANT for session refreshes)
   sock.ev.on('creds.update', async () => {
-    console.log('Credentials updated. Saving to Firebase...');
-    await saveCredsToFirebase(state.creds);
+    console.log('Credentials updated. Saving to local files and syncing to Firebase...');
+    await saveCreds(); // This saves updates to the local temp_baileys_session/creds.json file
+    // Now read the updated creds from the local file system and push to Firebase
+    const updatedCreds = JSON.parse(fs.readFileSync(path.join(AUTH_FILE_DIR, 'creds.json')));
+    await saveCredsToFirebase(updatedCreds);
   });
 
   // Listen for incoming messages
